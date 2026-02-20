@@ -105,6 +105,19 @@ export function buildGovernanceHistoryArtifact({
   };
 }
 
+/**
+ * Produces the canonical JSON string used as input to the integrity hash.
+ *
+ * STABILITY CONTRACT — do not change without migrating stored artifacts:
+ * - Field order is part of the integrity contract. JSON.stringify preserves
+ *   object literal key insertion order, so reordering fields here invalidates
+ *   every digest stored in governance-history.json.
+ * - Adding new fields to the serialized object is a breaking change for all
+ *   previously sealed artifacts.
+ * - `integrity` is intentionally excluded so the seal-then-verify cycle works:
+ *   the digest is computed over the artifact content, then stored in `integrity`,
+ *   without the `integrity` field itself affecting the hash.
+ */
 export function serializeGovernanceHistoryForIntegrity(
   artifact:
     | GovernanceHistoryArtifact
