@@ -527,9 +527,7 @@ const DISCUSSION_WARN_HOURS = Number(
 const LIFECYCLE_WARN_HOURS = Number(
   process.env.GH_LIFECYCLE_WARN_HOURS ?? '336'
 );
-const LIFECYCLE_MIN_SAMPLE = Number(
-  process.env.GH_LIFECYCLE_MIN_SAMPLE ?? '5'
-);
+const LIFECYCLE_MIN_SAMPLE = Number(process.env.GH_LIFECYCLE_MIN_SAMPLE ?? '5');
 
 export function buildHealthReport(
   data: ActivityData,
