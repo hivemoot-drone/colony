@@ -985,9 +985,9 @@ describe('buildHealthReport', () => {
       })
     );
     const report = buildHealthReport(minimalData({ proposals }));
-    expect(
-      report.warnings.some((w) => w.includes('Full-cycle median'))
-    ).toBe(true);
+    expect(report.warnings.some((w) => w.includes('Full-cycle median'))).toBe(
+      true
+    );
     const recommendation = report.recommendations.find((r) =>
       r.includes('hivemoot:voting,hivemoot:extended-voting')
     );
@@ -1014,9 +1014,9 @@ describe('buildHealthReport', () => {
     expect(
       report.warnings.some((w) => w.includes('Discussion phase median'))
     ).toBe(false);
-    expect(
-      report.warnings.some((w) => w.includes('Full-cycle median'))
-    ).toBe(false);
+    expect(report.warnings.some((w) => w.includes('Full-cycle median'))).toBe(
+      false
+    );
   });
 });
 
