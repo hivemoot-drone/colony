@@ -123,6 +123,23 @@ export interface VoterParticipationMetric {
   eligibleVoterCount: number;
 }
 
+/**
+ * Median durations for each phase of the proposal governance lifecycle.
+ *
+ * Requires `phaseTransitions` on proposals. Proposals without transitions are
+ * excluded from the sample. Durations are in hours.
+ */
+export interface ProposalLifecycleTimingMetric {
+  /** Median hours proposals spent in the discussion phase before voting opened. Null if no data. */
+  discussionMedianHours: number | null;
+  /** Median hours proposals spent in the voting phase (including extended-voting) before resolution. Null if no data. */
+  votingMedianHours: number | null;
+  /** Median hours from proposal creation to reaching a terminal state (ready-to-implement, implemented, rejected, inconclusive). Null if no data. */
+  fullCycleMedianHours: number | null;
+  /** Number of resolved proposals that contributed to at least one duration measurement. */
+  sampleSize: number;
+}
+
 export interface HealthReport {
   generatedAt: string;
   /** Days spanned by the earliest to latest proposal */
@@ -136,6 +153,7 @@ export interface HealthReport {
     contestedDecisionRate: ContestedRateMetric;
     crossRoleReviewRate: CrossRoleReviewMetric;
     voterParticipationRate: VoterParticipationMetric;
+    proposalLifecycleTiming: ProposalLifecycleTimingMetric;
   };
   /** Human-readable warnings for metrics outside healthy thresholds */
   warnings: string[];
@@ -394,6 +412,89 @@ export function computeDataWindowDays(proposals: Proposal[]): number {
   return Math.max(0, Math.ceil((latest - earliest) / (1000 * 60 * 60 * 24)));
 }
 
+const PROPOSAL_TERMINAL_PHASES = new Set([
+  'ready-to-implement',
+  'implemented',
+  'rejected',
+  'inconclusive',
+]);
+const PROPOSAL_VOTING_PHASES = new Set(['voting', 'extended-voting']);
+
+/**
+ * Compute median durations for each phase of the proposal governance lifecycle.
+ *
+ * Requires `phaseTransitions` on proposals. Proposals without transitions are
+ * excluded from all measurements. Phase timestamps must be monotonically
+ * non-decreasing relative to `proposal.createdAt`; out-of-order or invalid
+ * timestamps are silently dropped.
+ */
+export function computeProposalLifecycleTiming(
+  proposals: Proposal[]
+): ProposalLifecycleTimingMetric {
+  const discussionDurations: number[] = [];
+  const votingDurations: number[] = [];
+  const fullCycleDurations: number[] = [];
+  let sampleSize = 0;
+
+  for (const proposal of proposals) {
+    const transitions = proposal.phaseTransitions;
+    if (!transitions || transitions.length === 0) continue;
+
+    const createdTime = new Date(proposal.createdAt).getTime();
+    if (!Number.isFinite(createdTime)) continue;
+
+    const votingTransition = transitions.find((t) =>
+      PROPOSAL_VOTING_PHASES.has(t.phase)
+    );
+    const terminalTransition = transitions.find((t) =>
+      PROPOSAL_TERMINAL_PHASES.has(t.phase)
+    );
+
+    let contributed = false;
+
+    if (votingTransition) {
+      const votingTime = new Date(votingTransition.enteredAt).getTime();
+      if (Number.isFinite(votingTime) && votingTime >= createdTime) {
+        discussionDurations.push((votingTime - createdTime) / 3600000);
+        contributed = true;
+
+        if (terminalTransition) {
+          const terminalTime = new Date(terminalTransition.enteredAt).getTime();
+          if (Number.isFinite(terminalTime) && terminalTime >= votingTime) {
+            votingDurations.push((terminalTime - votingTime) / 3600000);
+          }
+        }
+      }
+    }
+
+    if (terminalTransition) {
+      const terminalTime = new Date(terminalTransition.enteredAt).getTime();
+      if (Number.isFinite(terminalTime) && terminalTime >= createdTime) {
+        fullCycleDurations.push((terminalTime - createdTime) / 3600000);
+        contributed = true;
+      }
+    }
+
+    if (contributed) sampleSize++;
+  }
+
+  return {
+    discussionMedianHours: percentile(
+      [...discussionDurations].sort((a, b) => a - b),
+      50
+    ),
+    votingMedianHours: percentile(
+      [...votingDurations].sort((a, b) => a - b),
+      50
+    ),
+    fullCycleMedianHours: percentile(
+      [...fullCycleDurations].sort((a, b) => a - b),
+      50
+    ),
+    sampleSize,
+  };
+}
+
 // ──────────────────────────────────────────────
 // Warning thresholds (configurable via env)
 // ──────────────────────────────────────────────
@@ -448,6 +549,10 @@ export function buildHealthReport(
   const voterParticipationRate = computeVoterParticipationRate(
     data.proposals,
     eligibleVoterCount
+  );
+
+  const proposalLifecycleTiming = computeProposalLifecycleTiming(
+    data.proposals
   );
 
   const warnings: string[] = [];
@@ -546,6 +651,7 @@ export function buildHealthReport(
       contestedDecisionRate,
       crossRoleReviewRate,
       voterParticipationRate,
+      proposalLifecycleTiming,
     },
     warnings,
     recommendations,
@@ -609,6 +715,7 @@ function printReport(report: HealthReport): void {
     contestedDecisionRate,
     crossRoleReviewRate,
     voterParticipationRate,
+    proposalLifecycleTiming,
   } = report.metrics;
 
   console.log(`Governance Health Report`);
@@ -680,6 +787,21 @@ function printReport(report: HealthReport): void {
   console.log(`  avg participation: ${avgPct}`);
   console.log(
     `  quorum failure rate: ${Math.round(voterParticipationRate.quorumFailureRate * 100)}%`
+  );
+  console.log('');
+
+  console.log('Proposal Lifecycle Timing');
+  console.log(
+    `  discussion median: ${formatHours(proposalLifecycleTiming.discussionMedianHours)}`
+  );
+  console.log(
+    `  voting median:     ${formatHours(proposalLifecycleTiming.votingMedianHours)}`
+  );
+  console.log(
+    `  full-cycle median: ${formatHours(proposalLifecycleTiming.fullCycleMedianHours)}`
+  );
+  console.log(
+    `  sample: ${proposalLifecycleTiming.sampleSize} resolved proposals`
   );
   console.log('');
 
