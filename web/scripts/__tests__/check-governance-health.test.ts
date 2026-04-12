@@ -944,6 +944,80 @@ describe('buildHealthReport', () => {
       true
     );
   });
+
+  it('emits discussion phase warning when median > 72h with >= 5 samples', () => {
+    // 5 proposals each with an 80h discussion phase (> 72h threshold)
+    const proposals = Array.from({ length: 5 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-04T08:00:00Z' }, // 80h discussion
+          { phase: 'implemented', enteredAt: '2026-02-05T08:00:00Z' },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(
+      report.warnings.some((w) => w.includes('Discussion phase median'))
+    ).toBe(true);
+    const recommendation = report.recommendations.find((r) =>
+      r.includes('hivemoot:discussion')
+    );
+    expect(recommendation).toBeDefined();
+  });
+
+  it('emits full-cycle warning when median > 336h with >= 5 samples', () => {
+    // 5 proposals each with a 400h full cycle (> 336h threshold)
+    const proposals = Array.from({ length: 5 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-10T00:00:00Z' }, // 216h discussion
+          {
+            phase: 'implemented',
+            enteredAt: '2026-02-17T16:00:00Z', // 400h full cycle
+          },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(
+      report.warnings.some((w) => w.includes('Full-cycle median'))
+    ).toBe(true);
+    const recommendation = report.recommendations.find((r) =>
+      r.includes('hivemoot:voting,hivemoot:extended-voting')
+    );
+    expect(recommendation).toBeDefined();
+  });
+
+  it('does not emit lifecycle warnings when sample size is below minimum (< 5)', () => {
+    // 4 proposals with above-threshold durations — should not warn
+    const proposals = Array.from({ length: 4 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-04T08:00:00Z' }, // 80h > 72h
+          {
+            phase: 'implemented',
+            enteredAt: '2026-02-17T16:00:00Z', // 400h > 336h
+          },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(
+      report.warnings.some((w) => w.includes('Discussion phase median'))
+    ).toBe(false);
+    expect(
+      report.warnings.some((w) => w.includes('Full-cycle median'))
+    ).toBe(false);
+  });
 });
 
 // ──────────────────────────────────────────────

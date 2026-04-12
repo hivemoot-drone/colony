@@ -521,6 +521,15 @@ const VOTER_PARTICIPATION_WARN = Number(
 const VOTER_PARTICIPATION_MIN_SAMPLE = Number(
   process.env.GH_VOTER_PARTICIPATION_MIN_SAMPLE ?? '3'
 );
+const DISCUSSION_WARN_HOURS = Number(
+  process.env.GH_DISCUSSION_WARN_HOURS ?? '72'
+);
+const LIFECYCLE_WARN_HOURS = Number(
+  process.env.GH_LIFECYCLE_WARN_HOURS ?? '336'
+);
+const LIFECYCLE_MIN_SAMPLE = Number(
+  process.env.GH_LIFECYCLE_MIN_SAMPLE ?? '5'
+);
 
 export function buildHealthReport(
   data: ActivityData,
@@ -636,6 +645,32 @@ export function buildHealthReport(
     );
     recommendations.push(
       `Reach out to inactive voters on active governance decisions. Check open issues labeled 'hivemoot:voting' and 'hivemoot:extended-voting', then share the current voting thread link.`
+    );
+  }
+
+  if (
+    proposalLifecycleTiming.sampleSize >= LIFECYCLE_MIN_SAMPLE &&
+    proposalLifecycleTiming.discussionMedianHours !== null &&
+    proposalLifecycleTiming.discussionMedianHours > DISCUSSION_WARN_HOURS
+  ) {
+    warnings.push(
+      `Discussion phase median (${formatHours(proposalLifecycleTiming.discussionMedianHours)}) exceeds ${DISCUSSION_WARN_HOURS}h — proposals may be stalling before voting`
+    );
+    recommendations.push(
+      `Check 'gh issue list --label hivemoot:discussion' for proposals spending an unusually long time in discussion before calling for a vote.`
+    );
+  }
+
+  if (
+    proposalLifecycleTiming.sampleSize >= LIFECYCLE_MIN_SAMPLE &&
+    proposalLifecycleTiming.fullCycleMedianHours !== null &&
+    proposalLifecycleTiming.fullCycleMedianHours > LIFECYCLE_WARN_HOURS
+  ) {
+    warnings.push(
+      `Full-cycle median (${formatHours(proposalLifecycleTiming.fullCycleMedianHours)}) exceeds ${LIFECYCLE_WARN_HOURS}h — median proposal-to-resolution exceeds two weeks`
+    );
+    recommendations.push(
+      `Review stalled proposals with 'gh issue list --label hivemoot:voting,hivemoot:extended-voting' to identify voting cycles that have been open longer than expected.`
     );
   }
 
