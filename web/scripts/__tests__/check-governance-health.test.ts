@@ -14,6 +14,7 @@ import {
   computeMergeLatency,
   computeContestedRate,
   computePrCycleTime,
+  computeProposalLifecycleTiming,
   computeReviewLatency,
   computeRoleDiversity,
   computeVoterParticipationRate,
@@ -680,6 +681,7 @@ describe('buildHealthReport', () => {
     expect(report.metrics.contestedDecisionRate).toBeDefined();
     expect(report.metrics.crossRoleReviewRate).toBeDefined();
     expect(report.metrics.voterParticipationRate).toBeDefined();
+    expect(report.metrics.proposalLifecycleTiming).toBeDefined();
     expect(report.warnings).toBeInstanceOf(Array);
     expect(report.recommendations).toBeInstanceOf(Array);
   });
@@ -941,6 +943,217 @@ describe('buildHealthReport', () => {
     expect(report.warnings.some((w) => w.includes('Merge backlog depth'))).toBe(
       true
     );
+  });
+
+  it('emits discussion phase warning when median > 72h with >= 5 samples', () => {
+    const proposals = Array.from({ length: 5 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-04T08:00:00Z' }, // 80h discussion
+          { phase: 'implemented', enteredAt: '2026-02-05T08:00:00Z' },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(
+      report.warnings.some((w) => w.includes('Discussion phase median'))
+    ).toBe(true);
+    const recommendation = report.recommendations.find((r) =>
+      r.includes('hivemoot:discussion')
+    );
+    expect(recommendation).toBeDefined();
+  });
+
+  it('emits full-cycle warning when median > 336h with >= 5 samples', () => {
+    const proposals = Array.from({ length: 5 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-10T00:00:00Z' }, // 216h discussion
+          {
+            phase: 'implemented',
+            enteredAt: '2026-02-17T16:00:00Z', // 400h full cycle
+          },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(report.warnings.some((w) => w.includes('Full-cycle median'))).toBe(
+      true
+    );
+    const recommendation = report.recommendations.find((r) =>
+      r.includes('hivemoot:voting,hivemoot:extended-voting')
+    );
+    expect(recommendation).toBeDefined();
+  });
+
+  it('does not emit lifecycle warnings when sample size is below minimum (< 5)', () => {
+    const proposals = Array.from({ length: 4 }, (_, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-04T08:00:00Z' }, // 80h > 72h
+          {
+            phase: 'implemented',
+            enteredAt: '2026-02-17T16:00:00Z', // 400h > 336h
+          },
+        ],
+      })
+    );
+    const report = buildHealthReport(minimalData({ proposals }));
+    expect(
+      report.warnings.some((w) => w.includes('Discussion phase median'))
+    ).toBe(false);
+    expect(report.warnings.some((w) => w.includes('Full-cycle median'))).toBe(
+      false
+    );
+  });
+});
+
+// ──────────────────────────────────────────────
+// computeProposalLifecycleTiming
+// ──────────────────────────────────────────────
+
+describe('computeProposalLifecycleTiming', () => {
+  it('returns all-null durations and sampleSize 0 for empty proposals', () => {
+    const result = computeProposalLifecycleTiming([]);
+    expect(result.discussionMedianHours).toBeNull();
+    expect(result.votingMedianHours).toBeNull();
+    expect(result.fullCycleMedianHours).toBeNull();
+    expect(result.sampleSize).toBe(0);
+  });
+
+  it('returns all-null durations and sampleSize 0 when proposals have no phaseTransitions', () => {
+    const result = computeProposalLifecycleTiming([
+      makeProposal({ phase: 'implemented' }),
+      makeProposal({ phase: 'ready-to-implement' }),
+    ]);
+    expect(result.discussionMedianHours).toBeNull();
+    expect(result.votingMedianHours).toBeNull();
+    expect(result.fullCycleMedianHours).toBeNull();
+    expect(result.sampleSize).toBe(0);
+  });
+
+  it('computes all three durations for a fully resolved proposal', () => {
+    // discussion: 24h, voting: 48h, full cycle: 72h
+    const result = computeProposalLifecycleTiming([
+      makeProposal({
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'ready-to-implement',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-02T00:00:00Z' },
+          { phase: 'ready-to-implement', enteredAt: '2026-02-04T00:00:00Z' },
+        ],
+      }),
+    ]);
+    expect(result.discussionMedianHours).toBe(24);
+    expect(result.votingMedianHours).toBe(48);
+    expect(result.fullCycleMedianHours).toBe(72);
+    expect(result.sampleSize).toBe(1);
+  });
+
+  it('computes discussion duration only when voting transition exists but no terminal', () => {
+    const result = computeProposalLifecycleTiming([
+      makeProposal({
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'voting',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-02T00:00:00Z' }, // 24h of discussion
+        ],
+      }),
+    ]);
+    expect(result.discussionMedianHours).toBe(24);
+    expect(result.votingMedianHours).toBeNull();
+    expect(result.fullCycleMedianHours).toBeNull();
+    expect(result.sampleSize).toBe(1);
+  });
+
+  it('computes fullCycle only when terminal transition exists but no voting transition', () => {
+    const result = computeProposalLifecycleTiming([
+      makeProposal({
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'ready-to-implement',
+        phaseTransitions: [
+          { phase: 'ready-to-implement', enteredAt: '2026-02-03T00:00:00Z' },
+        ],
+      }),
+    ]);
+    expect(result.discussionMedianHours).toBeNull();
+    expect(result.votingMedianHours).toBeNull();
+    expect(result.fullCycleMedianHours).toBe(48);
+    expect(result.sampleSize).toBe(1);
+  });
+
+  it('counts extended-voting as the start of voting phase', () => {
+    // extended-voting starts 48h in; terminal at 72h
+    const result = computeProposalLifecycleTiming([
+      makeProposal({
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'ready-to-implement',
+        phaseTransitions: [
+          { phase: 'extended-voting', enteredAt: '2026-02-03T00:00:00Z' },
+          { phase: 'ready-to-implement', enteredAt: '2026-02-04T00:00:00Z' },
+        ],
+      }),
+    ]);
+    expect(result.discussionMedianHours).toBe(48);
+    expect(result.votingMedianHours).toBe(24);
+    expect(result.fullCycleMedianHours).toBe(72);
+  });
+
+  it('uses voting phase over extended-voting when both present', () => {
+    // voting at 24h, extended-voting at 48h, terminal at 72h
+    const result = computeProposalLifecycleTiming([
+      makeProposal({
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'ready-to-implement',
+        phaseTransitions: [
+          { phase: 'voting', enteredAt: '2026-02-02T00:00:00Z' },
+          { phase: 'extended-voting', enteredAt: '2026-02-03T00:00:00Z' },
+          { phase: 'ready-to-implement', enteredAt: '2026-02-04T00:00:00Z' },
+        ],
+      }),
+    ]);
+    expect(result.discussionMedianHours).toBe(24);
+    expect(result.votingMedianHours).toBe(48);
+    expect(result.fullCycleMedianHours).toBe(72);
+  });
+
+  it('computes median across multiple proposals', () => {
+    const proposals = [24, 48, 72].map((hours, i) =>
+      makeProposal({
+        number: i + 1,
+        createdAt: '2026-02-01T00:00:00Z',
+        phase: 'implemented',
+        phaseTransitions: [
+          {
+            phase: 'voting',
+            enteredAt: `2026-02-0${Math.floor(hours / 24) + 1}T00:00:00Z`,
+          },
+          {
+            phase: 'implemented',
+            enteredAt: `2026-02-0${Math.floor(hours / 24) + 2}T00:00:00Z`,
+          },
+        ],
+      })
+    );
+    const result = computeProposalLifecycleTiming(proposals);
+    expect(result.sampleSize).toBe(3);
+    expect(result.fullCycleMedianHours).not.toBeNull();
+  });
+
+  it('excludes proposals with empty phaseTransitions array', () => {
+    const result = computeProposalLifecycleTiming([
+      makeProposal({ phaseTransitions: [] }),
+    ]);
+    expect(result.sampleSize).toBe(0);
   });
 });
 
