@@ -1,4 +1,10 @@
+import { spawnSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+const WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const TSX_CLI = join(WEB_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 import {
   buildRepositoryApiUrl,
   hasAtomAutodiscoveryLink,
@@ -248,5 +254,26 @@ describe('VisibilityReport', () => {
       ok: false,
       details: 'sitemap.xml not found',
     });
+  });
+});
+
+describe('CLI entrypoint', () => {
+  it('prints a single-line error and exits non-zero for invalid COLONY_REPOSITORY', () => {
+    const result = spawnSync(
+      process.execPath,
+      [TSX_CLI, 'scripts/check-visibility.ts'],
+      {
+        cwd: WEB_DIR,
+        env: { ...process.env, COLONY_REPOSITORY: 'invalid-value' },
+        encoding: 'utf-8',
+      }
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    const stderr = result.stderr.trim();
+    expect(stderr).not.toBe('');
+    expect(stderr.split('\n')).toHaveLength(1);
+    expect(stderr).not.toContain('UnhandledPromiseRejection');
   });
 });
