@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type {
   ActivityData,
   Comment,
@@ -20,6 +20,7 @@ import {
   extractRole,
   hadQuorumFailure,
   inferEligibleVoterCount,
+  parseArgs,
   percentile,
   resolveActivityFile,
 } from '../check-governance-health';
@@ -960,5 +961,35 @@ describe('resolveActivityFile', () => {
     const result = resolveActivityFile({});
     expect(result).toContain('activity.json');
     expect(result).toContain('public');
+  });
+});
+
+describe('parseArgs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns json: false with no args', () => {
+    expect(parseArgs([])).toEqual({ json: false });
+  });
+
+  it('returns json: true with --json', () => {
+    expect(parseArgs(['--json'])).toEqual({ json: true });
+  });
+
+  it('throws on unknown argument', () => {
+    expect(() => parseArgs(['--unknown'])).toThrow(
+      'Unknown argument: --unknown'
+    );
+  });
+
+  it('prints help and exits on --help', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exit = vi.spyOn(process, 'exit').mockImplementation((_code) => {
+      throw new Error('process.exit');
+    });
+    expect(() => parseArgs(['--help'])).toThrow('process.exit');
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('--json'));
   });
 });
