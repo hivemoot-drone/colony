@@ -1,4 +1,7 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const DEFAULT_REPO = 'hivemoot/colony';
 export const DEFAULT_LIMIT = 200;
@@ -423,11 +426,27 @@ function parseIssueRefFromUrl(
   }
 }
 
-function resolveIssueStates(
+async function resolveIssueStates(
   repo: string,
   prs: PullRequestNode[]
-): Map<string, string> {
-  const issueKeys = Array.from(
+): Promise<Map<string, string>> {
+  const states = new Map<string, string>();
+
+  // Pre-populate from states already returned by the GraphQL query — no API
+  // call needed for these. getLinkedOpenIssues trusts this state directly, so
+  // we avoid a round-trip for every issue GitHub already told us about.
+  for (const pr of prs) {
+    for (const issue of pr.closingIssuesReferences ?? []) {
+      const directState = issue.state?.toUpperCase();
+      if (directState === 'OPEN' || directState === 'CLOSED') {
+        states.set(getIssueKey(issue, repo), directState);
+      }
+    }
+  }
+
+  // Collect unique keys for issues whose state GraphQL didn't return, then
+  // fetch them in parallel instead of one serial execFileSync per issue.
+  const unknownKeys = Array.from(
     new Set(
       prs.flatMap((pr) =>
         (pr.closingIssuesReferences ?? []).map((issue) =>
@@ -435,35 +454,35 @@ function resolveIssueStates(
         )
       )
     )
+  ).filter((key) => !states.has(key));
+
+  await Promise.all(
+    unknownKeys.map(async (issueKey) => {
+      const hashIndex = issueKey.lastIndexOf('#');
+      const issueRepo = issueKey.slice(0, hashIndex);
+      const issueNumber = issueKey.slice(hashIndex + 1);
+
+      try {
+        const { stdout } = await execFileAsync(
+          'gh',
+          ['api', `repos/${issueRepo}/issues/${issueNumber}`, '--jq', '.state'],
+          { encoding: 'utf8' }
+        );
+        states.set(issueKey, stdout.trim().toUpperCase());
+      } catch {
+        states.set(issueKey, 'UNKNOWN');
+      }
+    })
   );
-  const states = new Map<string, string>();
-
-  for (const issueKey of issueKeys) {
-    const hashIndex = issueKey.lastIndexOf('#');
-    const issueRepo = issueKey.slice(0, hashIndex);
-    const issueNumber = issueKey.slice(hashIndex + 1);
-
-    try {
-      const state = execFileSync(
-        'gh',
-        ['api', `repos/${issueRepo}/issues/${issueNumber}`, '--jq', '.state'],
-        {
-          encoding: 'utf8',
-        }
-      )
-        .trim()
-        .toUpperCase();
-      states.set(issueKey, state);
-    } catch {
-      states.set(issueKey, 'UNKNOWN');
-    }
-  }
 
   return states;
 }
 
-function buildReport(prs: PullRequestNode[], repo: string): Report {
-  const issueStates = resolveIssueStates(repo, prs);
+async function buildReport(
+  prs: PullRequestNode[],
+  repo: string
+): Promise<Report> {
+  const issueStates = await resolveIssueStates(repo, prs);
   const candidates: CandidateRecord[] = prs.map((pr) => {
     const evaluation = evaluateEligibility(pr, issueStates, repo);
     return {
@@ -578,10 +597,10 @@ export function printHumanReport(report: Report): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const prs = loadPullRequests(options.repo, options.limit);
-  const report = buildReport(prs, options.repo);
+  const report = await buildReport(prs, options.repo);
 
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));
@@ -592,5 +611,8 @@ function main(): void {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  main().catch((e: unknown) => {
+    console.error('Fatal:', e);
+    process.exit(1);
+  });
 }
